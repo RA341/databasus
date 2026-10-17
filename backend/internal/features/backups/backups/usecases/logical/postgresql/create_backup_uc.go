@@ -400,7 +400,17 @@ func (uc *CreatePostgresqlBackupUsecase) setupPgEnvironment(
 	cpuCount int,
 	pgBin string,
 ) error {
-	cmd.Env = os.Environ()
+	// Keep libpq settings for Databasus's own database out of backup processes.
+	// Backup-specific settings use BACKUP_PG* and are translated for libpq.
+	cmd.Env = make([]string, 0, len(os.Environ())+12)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "PG") || strings.HasPrefix(key, "BACKUP_PG") {
+			continue
+		}
+
+		cmd.Env = append(cmd.Env, entry)
+	}
 	cmd.Env = append(cmd.Env, "PGPASSFILE="+credentials.PgpassPath)
 	cmd.Env = append(cmd.Env, postgresql_shared.GetPgHostAddrEnv(credentialSpec)...)
 
@@ -429,6 +439,16 @@ func (uc *CreatePostgresqlBackupUsecase) setupPgEnvironment(
 		"PGSSLCRL=",
 	)
 	uc.logger.Info("using SSL mode", "ssl_mode", resolvedSslMode)
+
+	// Explicit backup settings override generated defaults only for this subprocess.
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || !strings.HasPrefix(key, "BACKUP_PG") {
+			continue
+		}
+
+		cmd.Env = append(cmd.Env, strings.TrimPrefix(key, "BACKUP_")+"="+value)
+	}
 
 	if _, err := exec.LookPath(pgBin); err != nil {
 		return fmt.Errorf("PostgreSQL executable not found or not accessible: %s - %w", pgBin, err)
